@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Spec-based wattage estimation fallback**
+  ([#19](https://github.com/gmhoward9289-ops/apcam-ai-power-meter/pull/19)) —
+  when no power sensor is available, `calibrate.ps1` detects the GPU model
+  (`Win32_VideoController` / `lspci` / `system_profiler`), looks it up in a new
+  curated `data/gpu-tdp.ps1` table, and derives a wide idle/active band from the
+  rated TDP. Labelled `powerSource: "spec-estimate"` throughout `machine.json`
+  and the dashboard so it is never presented as a measurement. On by default;
+  opt out with `-NoSpecEstimate`.
+
+### Fixed
+
+- **`build.ps1` resolves relative paths against PowerShell's location, not
+  .NET's** ([#20](https://github.com/gmhoward9289-ops/apcam-ai-power-meter/pull/20))
+  — `[System.IO.File]::ReadAllText`/`WriteAllText` resolve a relative path
+  against the process's .NET working directory, which `Set-Location` never
+  updates. A relative `-Dataset` or `-Template` could pass every `Test-Path`
+  check and still read or write the wrong file, or fail pointing at a directory
+  the user never navigated to. `$Template`, `$OutFile` and every `$Dataset` path
+  are now resolved once up front via `GetUnresolvedProviderPathFromPSPath`.
+- **History sort order is total, so reruns are reproducible**
+  ([#14](https://github.com/gmhoward9289-ops/apcam-ai-power-meter/pull/14)) —
+  `Hashtable.Values` enumeration order is randomized per process and
+  `Sort-Object` is stable, so sorting on timestamp alone left same-second ties
+  in that random order and a rerun over identical logs could reorder events in
+  `dataset.json`. `collect.ps1` and `llamacpp.ps1` now break ties with the rest
+  of the dedupe key.
+
+### Changed
+
+- Dashboard retitled to `Dashboard · APCAM Power Meter`
+  ([#26](https://github.com/gmhoward9289-ops/apcam-ai-power-meter/pull/26)).
+
+## [1.2.0] - 2026-08-01
+
+### Added
+
 - **Slider settings persist across reloads**
   ([#15](https://github.com/gmhoward9289-ops/shunt-ai-power/pull/15)) — rate,
   system draw and CO2 sliders are stored in `localStorage`, keyed per machine.
