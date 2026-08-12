@@ -42,6 +42,7 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot 'data/gpu-tdp.ps1')
+. (Join-Path $PSScriptRoot 'data/cpu-tdp.ps1')
 
 # ---------------- platform ----------------
 # $IsWindows/$IsLinux/$IsMacOS do not exist in Windows PowerShell 5.1 (they read
@@ -360,6 +361,16 @@ if ($onWindows) {
 }
 if (-not $cpuName) { $cpuName = $null }
 
+# Seed "Non-GPU system draw" from what we actually know about this machine
+# (its CPU) rather than the same flat 70 W guess on every machine. Only the
+# GPU is metered here, so this remains an estimate either way - see
+# data/cpu-tdp.ps1 for the basis and Get-SystemDrawEstimate's cpuIdleFrac
+# assumption - but a CPU-informed number is a better SEED than a constant,
+# and the dashboard slider stays fully user-adjustable on top of it either way.
+$sysDraw = Get-SystemDrawEstimate $cpuName
+$systemWattsEstimate = if ($sysDraw) { $sysDraw.systemWattsW } else { 70 }
+$systemWattsSource   = if ($sysDraw) { 'cpu-tdp-estimate' } else { 'default' }
+
 # ---------------- probe the chosen vendor ----------------
 $gpuStatic  = Get-GpuStatic
 $applePower = $null
@@ -403,8 +414,20 @@ $machine = [ordered]@{
     # wall power from a smart plug (-PlugUrl), when one was reachable
     wallIdleW     = $null
     wallActiveW   = $null
-    # user-supplied estimate; only the GPU can be metered from software
-    systemWatts   = 70
+    # seeded from data/cpu-tdp.ps1 when this CPU is in the table, else the old
+    # flat guess; either way it is an estimate, and the dashboard slider lets
+    # the user override it. See systemWattsSource for which case this run hit.
+    systemWatts   = $systemWattsEstimate
+    # "cpu-tdp-estimate" | "default" - whether systemWatts above came from
+    # this machine's CPU model or is just the old flat guess (CPU unmatched
+    # in data/cpu-tdp.ps1). Populated only in the cpu-tdp-estimate case:
+    # cpuTdpW/cpuTdpSource/cpuTdpSourceDate (the CPU's own rated TDP) and
+    # boardBaselineW (the fixed non-CPU/non-GPU allowance it was added to).
+    systemWattsSource = $systemWattsSource
+    cpuTdpW           = if ($sysDraw) { $sysDraw.cpuTdpW } else { $null }
+    cpuTdpSource      = if ($sysDraw) { $sysDraw.cpuTdpSource } else { $null }
+    cpuTdpSourceDate  = if ($sysDraw) { $sysDraw.cpuTdpSourceDate } else { $null }
+    boardBaselineW    = if ($sysDraw) { $sysDraw.boardBaselineW } else { $null }
     measured      = $false
     # "measured" | "spec-estimate" | "none" - see data/gpu-tdp.ps1 and the
     # dashboard's "Spec-estimated" footer bullet for what each means.
@@ -639,9 +662,16 @@ $machine.powerSource     = 'measured'
 $telemetryMethod = 'nvidia-smi'
 if ($GpuVendor -eq 'amd')       { $telemetryMethod = 'amd-smi/rocm-smi' }
 elseif ($GpuVendor -eq 'apple') { $telemetryMethod = 'powermetrics (Apple GPU rail; CPU and ANE draw excluded)' }
-$machine.note            = "gpuIdleW/gpuActiveW measured with $telemetryMethod. systemWatts is an " +
-                           'estimate for everything that is not the GPU - adjust it, or use a ' +
-                           'plug meter to measure wall draw properly.'
+$sysDrawNote = if ($sysDraw) {
+    "systemWatts ($systemWattsEstimate W) is estimated from $($sysDraw.cpuTdpLabel)'s rated TDP " +
+    "($($sysDraw.cpuTdpW) W, $($sysDraw.cpuTdpSource)) plus a $($sysDraw.boardBaselineW) W board/RAM/" +
+    'storage/fan baseline - still not measured, adjust it, or use a plug meter to measure wall draw properly.'
+} else {
+    'systemWatts is an estimate for everything that is not the GPU (this CPU is not in ' +
+    'data/cpu-tdp.ps1, so it fell back to a flat guess) - adjust it, or use a plug meter ' +
+    'to measure wall draw properly.'
+}
+$machine.note            = "gpuIdleW/gpuActiveW measured with $telemetryMethod. $sysDrawNote"
 
 $machine | ConvertTo-Json -Depth 4 | Set-Content -Path $OutFile -Encoding utf8
 Write-Output ""
@@ -651,6 +681,12 @@ if ($null -ne $machine.gpuLimitW) {
         $machine.gpuIdleW, $machine.gpuActiveW, $machine.gpuLimitW)
 } else {
     Write-Output ("envelope: {0} W idle -> {1} W sustained" -f $machine.gpuIdleW, $machine.gpuActiveW)
+}
+if ($sysDraw) {
+    Write-Output ("system draw: {0} W estimated ({1} TDP {2} W x 25% + {3} W baseline)" -f `
+        $systemWattsEstimate, $sysDraw.cpuTdpLabel, $sysDraw.cpuTdpW, $sysDraw.boardBaselineW)
+} else {
+    Write-Output ("system draw: {0} W (flat default - '{1}' not in data/cpu-tdp.ps1)" -f $systemWattsEstimate, $cpuName)
 }
 if ($null -ne $machine.wallIdleW -or $null -ne $machine.wallActiveW) {
     Write-Output ("wall:     {0} W idle -> {1} W active (smart plug at {2})" -f `
