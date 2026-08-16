@@ -1,0 +1,19 @@
+name: Codespell
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  codespell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: codespell-project/actions-codespell@406322ec52dd7b488e48c1c4b82e2a8b3a1bf630 # v2
+        with:
+          # ANE = Apple Neural Engine, fillIn = variable name in
+          # calibrate.ps1, ND = abbreviation in the dashboard template.
+          ignore_words_list: ane,fillin,nd
