@@ -104,4 +104,4 @@ Bug fixes with a clear reproduction and doc corrections move much faster.
 
 ---
 
-By contributing you agree your changes ship under the [MIT license](LICENSE).
+By contributing you agree your changes ship under the [Apache License 2.0](LICENSE).

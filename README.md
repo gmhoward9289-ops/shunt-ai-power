@@ -354,4 +354,4 @@ line by line — no promtool needed.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Use it, change it, ship it; just keep the notice.
+Apache-2.0 — see [LICENSE](LICENSE). Use it, change it, ship it; just keep the notice.
