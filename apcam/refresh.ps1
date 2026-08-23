@@ -19,6 +19,12 @@ param(
     [string]$RemoteHost = 'reef',        # ssh alias; apcam must already be deployed there
                                           # with machine.json calibrated
     [string]$RemotePath = 'C:\Users\Owner\apcam',   # absolute Windows path on the remote
+    # Where the remote's ollama serve actually logs. reef's serve is launched by
+    # Z:\ollama\serve-ollama.cmd, which redirects to Z:\ollama\logs - NOT the
+    # desktop-app default collect.ps1 assumes. Empty string means "use collect's
+    # default". Must contain no spaces or quotes: it rides the same double-shell
+    # (cmd.exe then PowerShell) hop collect.bat exists to keep trivial.
+    [string]$RemoteLogDir = 'Z:\ollama\logs',
     [switch]$SkipRemote   # rebuild from this machine's own dataset only
 )
 $ErrorActionPreference = 'Continue'
@@ -37,7 +43,7 @@ function Write-Log([string]$msg) {
 # dataset.<RemoteHost>.json (the naming convention .gitignore already covers
 # for per-source datasets). Returns the local path on success, $null on any
 # failure - callers treat that as "build without this machine this round".
-function Get-RemoteDataset([string]$RemoteHost, [string]$RemotePath, [string]$Root) {
+function Get-RemoteDataset([string]$RemoteHost, [string]$RemotePath, [string]$Root, [string]$RemoteLogDir) {
     # Write-Log's Write-Output would otherwise become part of THIS function's
     # own return value the moment it is called from inside a function (every
     # unassigned pipeline write a function makes joins its output), silently
@@ -66,6 +72,11 @@ function Get-RemoteDataset([string]$RemoteHost, [string]$RemotePath, [string]$Ro
     # shell to misparse.
     $remoteBat = "$RemotePath\collect.bat"
     $sshArgs = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', $RemoteHost, $remoteBat)
+    if ($RemoteLogDir) {
+        # Bare space-free tokens survive the cmd.exe hop untouched; collect.bat
+        # forwards them to collect.ps1 via %*.
+        $sshArgs += @('-LogDir', $RemoteLogDir)
+    }
     try {
         $collectOut = & ssh @sshArgs 2>&1
         foreach ($l in $collectOut) { Write-Log "  [$label] $l" | Out-Null }
@@ -137,7 +148,7 @@ if (-not (Test-Path $collectScript)) {
 
 $remoteDatasets = @()
 if (-not $failed -and -not $SkipRemote) {
-    $rp = Get-RemoteDataset -RemoteHost $RemoteHost -RemotePath $RemotePath -Root $Root
+    $rp = Get-RemoteDataset -RemoteHost $RemoteHost -RemotePath $RemotePath -Root $Root -RemoteLogDir $RemoteLogDir
     if ($rp) { $remoteDatasets += $rp }
 }
 
