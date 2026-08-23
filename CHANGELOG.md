@@ -19,6 +19,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Nested `ssh`/`scp` in `refresh.ps1` no longer wedge a scheduled run**
+  ([#30](https://github.com/gmhoward9289-ops/apcam-ai-power-meter/pull/30)) —
+  Win32-OpenSSH hangs at exit when its stdio are live PowerShell pipeline pipes
+  and it is running as a descendant of an inbound `sshd` session. The remote
+  leg's `& ssh` and `& scp` calls did exactly that, so the first run fired by a
+  remote scheduler completed the local collect, hung on the ssh back to the
+  other machine, and was killed by the scheduler's timeout — leaving an empty
+  stderr and a log that simply stops mid-run. Both calls now go through a new
+  `Invoke-SshTool` helper that redirects stdout/stderr to per-run temp files and
+  stdin from an empty file that EOFs immediately. Runs started by hand were
+  never affected, which is why this survived weeks of manual use.
+
 - **`build.ps1` resolves relative paths against PowerShell's location, not
   .NET's** ([#20](https://github.com/gmhoward9289-ops/apcam-ai-power-meter/pull/20))
   — `[System.IO.File]::ReadAllText`/`WriteAllText` resolve a relative path

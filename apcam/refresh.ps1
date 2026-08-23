@@ -43,6 +43,38 @@ function Write-Log([string]$msg) {
 # dataset.<RemoteHost>.json (the naming convention .gitignore already covers
 # for per-source datasets). Returns the local path on success, $null on any
 # failure - callers treat that as "build without this machine this round".
+function Invoke-SshTool([string]$Exe, [string]$ArgString, [string]$Label) {
+    # Win32-OpenSSH hangs at exit when its stdio are live PowerShell pipeline
+    # pipes, and an open stdin chain makes a nested ssh on the far side hang
+    # too. reef's cooper-scheduler.ps1 documents this as its "ssh stdio rule"
+    # and applies it to the job it launches - but that discipline cannot reach
+    # inside this script to the nested ssh/scp below. It bit on 2026-08-23: the
+    # 09:00 scheduled run finished this machine's collect in 7s, wedged on the
+    # ssh back to reef, and was killed by the scheduler's 15-minute cap with an
+    # empty stderr and no failure marker in the log.
+    # So: no PS pipes for ssh/scp. stdout/stderr go to per-run temp files that
+    # are read back afterward, and stdin is an empty file that EOFs instantly.
+    $stamp = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $tmpO  = Join-Path $env:TEMP "apcam-$Label-$stamp.out"
+    $tmpE  = Join-Path $env:TEMP "apcam-$Label-$stamp.err"
+    $empty = Join-Path $env:TEMP 'apcam-empty.in'
+    if (-not (Test-Path $empty)) { New-Item -ItemType File -Path $empty -Force | Out-Null }
+    try {
+        $p = Start-Process -FilePath $Exe -ArgumentList $ArgString `
+            -RedirectStandardInput $empty -RedirectStandardOutput $tmpO `
+            -RedirectStandardError $tmpE -PassThru -NoNewWindow
+        $null = $p.Handle   # cache the handle or .ExitCode reads back empty
+        $p.WaitForExit()
+        $lines = @()
+        foreach ($f in @($tmpO, $tmpE)) {
+            if (Test-Path $f) { $lines += @(Get-Content $f -ErrorAction SilentlyContinue) }
+        }
+        return [pscustomobject]@{ ExitCode = $p.ExitCode; Output = $lines }
+    } finally {
+        Remove-Item $tmpO, $tmpE -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-RemoteDataset([string]$RemoteHost, [string]$RemotePath, [string]$Root, [string]$RemoteLogDir) {
     # Write-Log's Write-Output would otherwise become part of THIS function's
     # own return value the moment it is called from inside a function (every
@@ -71,17 +103,18 @@ function Get-RemoteDataset([string]$RemoteHost, [string]$RemotePath, [string]$Ro
     # need for any of it: a bare path with no special characters for either
     # shell to misparse.
     $remoteBat = "$RemotePath\collect.bat"
-    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', $RemoteHost, $remoteBat)
+    # Bare space-free tokens, unquoted: they survive the cmd.exe hop untouched,
+    # which is the whole reason collect.bat exists. Do not add quotes here.
+    $sshArgStr = "-o BatchMode=yes -o ConnectTimeout=10 $RemoteHost $remoteBat"
     if ($RemoteLogDir) {
-        # Bare space-free tokens survive the cmd.exe hop untouched; collect.bat
-        # forwards them to collect.ps1 via %*.
-        $sshArgs += @('-LogDir', $RemoteLogDir)
+        # collect.bat forwards these to collect.ps1 via %*.
+        $sshArgStr += " -LogDir $RemoteLogDir"
     }
     try {
-        $collectOut = & ssh @sshArgs 2>&1
-        foreach ($l in $collectOut) { Write-Log "  [$label] $l" | Out-Null }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Log "  [$label] collect.ps1 exited $LASTEXITCODE - skipping this machine" | Out-Null
+        $r = Invoke-SshTool 'ssh' $sshArgStr $label
+        foreach ($l in $r.Output) { Write-Log "  [$label] $l" | Out-Null }
+        if ($r.ExitCode -ne 0) {
+            Write-Log "  [$label] collect.ps1 exited $($r.ExitCode) - skipping this machine" | Out-Null
             return $null
         }
     } catch {
@@ -92,9 +125,9 @@ function Get-RemoteDataset([string]$RemoteHost, [string]$RemotePath, [string]$Ro
     $tmp = Join-Path $env:TEMP "apcam-$label-dataset.json"
     $remoteDatasetPath = ($RemotePath -replace '\\', '/') + '/dataset.json'
     try {
-        & scp -q -o BatchMode=yes "${RemoteHost}:${remoteDatasetPath}" $tmp 2>&1 |
-            ForEach-Object { Write-Log "  [$label] scp: $_" | Out-Null }
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tmp)) {
+        $sr = Invoke-SshTool 'scp' "-q -o BatchMode=yes ${RemoteHost}:${remoteDatasetPath} `"$tmp`"" "$label-scp"
+        foreach ($l in $sr.Output) { Write-Log "  [$label] scp: $l" | Out-Null }
+        if ($sr.ExitCode -ne 0 -or -not (Test-Path $tmp)) {
             Write-Log "  [$label] scp pull failed - skipping this machine" | Out-Null
             return $null
         }
